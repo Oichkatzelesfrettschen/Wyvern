@@ -10,6 +10,13 @@ pub struct Config {
     pub startup_apps: Vec<String>,
     pub display: Display,
     pub keyboard: KeyboardOptions,
+    pub tiling: Tiling,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Tiling {
+    pub master_ratio: f32,
+    pub gap_size: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +69,10 @@ impl Default for Config {
                 options: "grp:alt_shift_toggle".into(),
                 variant: "".into(),
                 rules: "evdev".into(),
+            },
+            tiling: Tiling {
+                master_ratio: 0.55,
+                gap_size: 10,
             },
         }
     }

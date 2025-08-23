@@ -29,7 +29,7 @@ use tracing::{error, trace};
 use crate::{focus::KeyboardFocusTarget, state::Backend, WyvernState};
 
 use super::{
-    place_new_window, FullscreenSurface, PointerMoveSurfaceGrab, PointerResizeSurfaceGrab,
+    FullscreenSurface, PointerMoveSurfaceGrab, PointerResizeSurfaceGrab,
     ResizeData, ResizeState, SurfaceData, TouchMoveSurfaceGrab, WindowElement,
 };
 
@@ -62,12 +62,7 @@ impl<BackendData: Backend> XwmHandler for WyvernState<BackendData> {
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
         window.set_mapped(true).unwrap();
         let window = WindowElement(Window::new_x11_window(window));
-        place_new_window(
-            &mut self.space,
-            self.pointer.current_location(),
-            &window,
-            true,
-        );
+        
         let bbox = self.space.element_bbox(&window).unwrap();
         let Some(xsurface) = window.0.x11_surface() else {
             unreachable!()

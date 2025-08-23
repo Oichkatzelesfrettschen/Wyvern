@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-
 #[cfg(feature = "xwayland")]
 use smithay::xwayland::XWaylandClientData;
 
@@ -17,19 +16,18 @@ use smithay::{
     reexports::{
         calloop::Interest,
         wayland_server::{
-            protocol::{wl_buffer::WlBuffer, wl_output, wl_surface::WlSurface},
+            protocol::{wl_output, wl_surface::WlSurface},
             Client, Resource,
         },
     },
     utils::{IsAlive, Logical, Point, Rectangle, Size},
     wayland::{
-        buffer::BufferHandler,
         compositor::{
             add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states,
             with_surface_tree_upward, BufferAssignment, CompositorClientState, CompositorHandler,
             CompositorState, SurfaceAttributes, TraversalAction,
         },
-        dmabuf::get_dmabuf,
+        dmabuf::{get_dmabuf},
         shell::{
             wlr_layer::{
                 Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData, WlrLayerShellHandler,
@@ -98,9 +96,7 @@ impl FullscreenSurface {
     }
 }
 
-impl<BackendData: Backend> BufferHandler for WyvernState<BackendData> {
-    fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
-}
+
 
 impl<BackendData: Backend> CompositorHandler for WyvernState<BackendData> {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -402,75 +398,117 @@ fn ensure_initial_configure(
     };
 }
 
-fn place_new_window(
-    space: &mut Space<WindowElement>,
-    pointer_location: Point<f64, Logical>,
+fn place_new_window<BackendData: Backend>(
+    state: &mut WyvernState<BackendData>,
     window: &WindowElement,
     activate: bool,
 ) {
-    // place the window at a random location on same output as pointer
-    // or if there is not output in a [0;800]x[0;800] square
-    use rand::distributions::{Distribution, Uniform};
-
-    let output = space
-        .output_under(pointer_location)
-        .next()
-        .or_else(|| space.outputs().next())
-        .cloned();
-    let output_geometry = output
-        .and_then(|o| {
-            let geo = space.output_geometry(&o)?;
-            let map = layer_map_for_output(&o);
-            let zone = map.non_exclusive_zone();
-            Some(Rectangle::new(geo.loc + zone.loc, zone.size))
-        })
-        .unwrap_or_else(|| Rectangle::from_size((800, 800).into()));
-
-    // set the initial toplevel bounds
-    #[allow(irrefutable_let_patterns)]
-    if let Some(toplevel) = window.0.toplevel() {
-        toplevel.with_pending_state(|state| {
-            state.bounds = Some(output_geometry.size);
-        });
-    }
-
-    let max_x = output_geometry.loc.x + (((output_geometry.size.w as f32) / 3.0) * 2.0) as i32;
-    let max_y = output_geometry.loc.y + (((output_geometry.size.h as f32) / 3.0) * 2.0) as i32;
-    let x_range = Uniform::new(output_geometry.loc.x, max_x);
-    let y_range = Uniform::new(output_geometry.loc.y, max_y);
-    let mut rng = rand::thread_rng();
-    let x = x_range.sample(&mut rng);
-    let y = y_range.sample(&mut rng);
-
-    space.map_element(window.clone(), (x, y), activate);
+    state.tiling_state.tiled_windows.push(window.clone());
+    recalculate_tiling_layout(state);
+    state.space.raise_element(window, activate);
 }
 
-pub fn fixup_positions(space: &mut Space<WindowElement>, pointer_location: Point<f64, Logical>) {
+fn recalculate_tiling_layout<B: Backend>(state: &mut WyvernState<B>) {
+    let outputs = state.space.outputs().collect::<Vec<_>>();
+    if outputs.is_empty() {
+        return;
+    }
+
+    // Filter out dead windows
+    state.tiling_state.tiled_windows.retain(|w| w.alive());
+
+    let output = outputs[0]; // For simplicity, use the first output for now
+    let output_geometry = state.space.output_geometry(output).unwrap();
+
+    let num_windows = state.tiling_state.tiled_windows.len();
+    if num_windows == 0 {
+        return;
+    }
+
+    let master_ratio = state.tiling_state.master_ratio;
+
+    if num_windows == 1 {
+        let window = &state.tiling_state.tiled_windows[0];
+        let new_location = output_geometry.loc;
+        let new_size = output_geometry.size;
+        state.space.map_element(window.clone(), new_location, false);
+        if let Some(toplevel) = window.0.toplevel() {
+            toplevel.with_pending_state(|state| {
+                state.size = Some(new_size);
+            });
+            toplevel.send_configure();
+        }
+        return;
+    }
+
+    let master_width = (output_geometry.size.w as f32 * master_ratio) as i32;
+    let stack_width = output_geometry.size.w - master_width;
+    let stack_height = output_geometry.size.h / (num_windows - 1) as i32;
+
+    let mut current_y = output_geometry.loc.y;
+
+    for (i, window) in state.tiling_state.tiled_windows.iter().enumerate() {
+        let new_x;
+        let new_y;
+        let new_width;
+        let new_height;
+
+        if i == 0 { // Master window
+            new_x = output_geometry.loc.x;
+            new_y = output_geometry.loc.y;
+            new_width = master_width;
+            new_height = output_geometry.size.h;
+        } else { // Stacked windows
+            new_x = output_geometry.loc.x + master_width;
+            new_width = stack_width;
+            new_height = stack_height;
+            new_y = current_y;
+            current_y += new_height;
+        }
+
+        let new_location = Point::from((new_x, new_y));
+        let new_size = Size::from((new_width, new_height));
+
+        state.space.map_element(window.clone(), new_location, false);
+        if let Some(toplevel) = window.0.toplevel() {
+            toplevel.with_pending_state(|state| {
+                state.size = Some(new_size);
+            });
+            toplevel.send_configure();
+        }
+    }
+}
+
+
+pub fn fixup_positions<BackendData: Backend>(
+    state: &mut WyvernState<BackendData>,
+    pointer_location: Point<f64, Logical>,
+) {
     // fixup outputs
     let mut offset = Point::<i32, Logical>::from((0, 0));
-    for output in space.outputs().cloned().collect::<Vec<_>>().into_iter() {
-        let size = space
+    for output in state.space.outputs().cloned().collect::<Vec<_>>().into_iter() {
+        let size = state.space
             .output_geometry(&output)
             .map(|geo| geo.size)
             .unwrap_or_else(|| Size::from((0, 0)));
-        space.map_output(&output, offset);
+        state.space.map_output(&output, offset);
         layer_map_for_output(&output).arrange();
         offset.x += size.w;
     }
 
     // fixup windows
     let mut orphaned_windows = Vec::new();
-    let outputs = space
+    let outputs = state.space
         .outputs()
         .flat_map(|o| {
-            let geo = space.output_geometry(o)?;
+            let geo = state.space.output_geometry(o)?;
             let map = layer_map_for_output(o);
             let zone = map.non_exclusive_zone();
             Some(Rectangle::new(geo.loc + zone.loc, zone.size))
         })
         .collect::<Vec<_>>();
-    for window in space.elements() {
-        let window_location = match space.element_location(window) {
+    for window in state.space.elements() {
+        let window_location = match state.space.element_location(window) {
             Some(loc) => loc,
             None => continue,
         };
@@ -481,6 +519,6 @@ pub fn fixup_positions(space: &mut Space<WindowElement>, pointer_location: Point
         }
     }
     for window in orphaned_windows.into_iter() {
-        place_new_window(space, pointer_location, &window, false);
+        place_new_window(state, &window, false);
     }
 }

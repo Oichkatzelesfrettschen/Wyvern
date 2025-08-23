@@ -29,11 +29,12 @@ shell-words = "1.1.0"
 wayland-protocols = { version = "0.32.8", features = ["unstable"] }
 wayland-protocols-wlr = { version = "0.3.8", features = ["server", "wayland-server"] }
 wayland-server = "0.31.9"
+calloop = "0.14.3"
 
 [dependencies.smithay]
 default-features = false
 features = ["desktop", "wayland_frontend"]
-version = "0.6.0"
+version = "0.7.0"
 
 [dependencies.x11rb]
 default-features = false

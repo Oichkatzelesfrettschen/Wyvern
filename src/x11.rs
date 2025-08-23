@@ -51,7 +51,12 @@ use smithay::{
         presentation::Refresh,
     },
 };
+
+use smithay::reexports::calloop;
 use tracing::{error, info, trace, warn};
+
+use crate::state::CustomEvent;
+
 
 pub const OUTPUT_NAME: &str = "x11";
 
@@ -107,10 +112,22 @@ impl Backend for X11Data {
     fn update_led_state(&mut self, _led_state: LedState) {}
 }
 
-pub fn run_x11() {
+pub fn run_x11(event_rx_main: calloop::channel::Channel<CustomEvent>, event_tx_for_state: calloop::channel::Sender<CustomEvent>) {
     let mut event_loop = EventLoop::try_new().unwrap();
     let display = Display::new().unwrap();
     let mut display_handle = display.handle();
+
+    event_loop
+        .handle()
+        .insert_source(event_rx_main, move |event, _metadata, data: &mut WyvernState<X11Data>| {
+            match event {
+                calloop::channel::Event::Msg(CustomEvent::TilingRecalculate) => {
+                    data.recalculate_tiling();
+                }
+                _ => {},
+            }
+        })
+        .expect("Failed to insert CustomEvent channel into event loop");
     let backend = X11Backend::new().expect("Failed to initilize X11 backend");
     let handle = backend.handle();
     let (node, fd) = handle
@@ -258,7 +275,7 @@ pub fn run_x11() {
         fps: fps_ticker::Fps::default(),
     };
 
-    let mut state = WyvernState::init(display, event_loop.handle(), data, true);
+    let mut state = WyvernState::init(display, event_loop.handle(), data, true, event_tx_for_state);
     state
         .shm_state
         .update_formats(state.backend_data.renderer.shm_formats());
@@ -280,7 +297,7 @@ pub fn run_x11() {
                 output.delete_mode(output.current_mode().unwrap());
                 output.change_current_state(Some(data.backend_data.mode), None, None, None);
                 output.set_preferred(data.backend_data.mode);
-                crate::shell::fixup_positions(&mut data.space, data.pointer.current_location());
+                crate::shell::fixup_positions(data, data.pointer.current_location());
                 data.backend_data.render = true;
             }
             X11Event::PresentCompleted { .. } | X11Event::Refresh { .. } => {

@@ -1,6 +1,7 @@
 use wyvern::udev;
 use wyvern::winit;
 use wyvern::x11;
+use calloop::channel;
 
 #[cfg(feature = "profile-with-tracy-mem")]
 #[global_allocator]
@@ -28,28 +29,30 @@ fn main() {
     #[cfg(feature = "profile-with-puffin")]
     profiling::puffin::set_scopes_on(true);
 
+    let (event_tx, event_rx) = channel::channel();
+
     let arg = ::std::env::args().nth(1);
-    match arg.as_ref().map(|s| &s[..]) {
+    match arg.as_deref() {
         #[cfg(feature = "winit")]
         Some("--winit") => {
             tracing::info!("Starting Wyvern with winit backend");
-            winit::run_winit();
+            winit::run_winit(event_rx, event_tx.clone());
         }
         #[cfg(feature = "udev")]
         Some("--tty-udev") => {
             tracing::info!("Starting Wyvern on a tty using udev");
-            udev::run_udev();
+            udev::run_udev(event_rx, event_tx.clone());
         }
         #[cfg(feature = "x11")]
         Some("--x11") => {
             tracing::info!("Starting Wyvern with x11 backend");
-            x11::run_x11();
+            x11::run_x11(event_rx, event_tx.clone());
         }
         Some(other) => {
             tracing::error!("Unknown backend: {}", other);
         }
         None => {
-            udev::run_udev();
+            udev::run_udev(event_rx, event_tx.clone());
         }
     }
 }

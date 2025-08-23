@@ -1,5 +1,5 @@
 use crate::config::Config;
-use wayland_server::GlobalDispatch;
+use smithay::wayland::buffer::BufferHandler;
 use std::{
     collections::HashMap,
     os::unix::io::OwnedFd,
@@ -7,11 +7,6 @@ use std::{
     time::Duration,
 };
 use tracing::{info, warn};
-use wayland_protocols_wlr::screencopy::v1::server::{
-    zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
-    zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
-};
-use smithay::reexports::wayland_protocols_wlr::foreign_toplevel::v1::server::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 use smithay::{
     backend::{
         input::TabletToolDescriptor,
@@ -43,15 +38,14 @@ use smithay::{
     },
     output::Output,
     reexports::{
-        calloop::{generic::Generic, Interest, LoopHandle, Mode, PostAction},
+        calloop::{channel::Sender, generic::Generic, Interest, LoopHandle, Mode, PostAction},
         wayland_protocols::xdg::decoration::{
             self as xdg_decoration,
             zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         },
-        wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason},
-            protocol::{wl_data_source::WlDataSource, wl_surface::WlSurface},
+            protocol::{wl_data_source::WlDataSource, wl_surface::WlSurface, wl_buffer::WlBuffer},
             Client, Display, DisplayHandle, Resource,
         },
     },
@@ -179,6 +173,7 @@ pub struct WyvernState<BackendData: Backend + 'static> {
     pub seat_name: String,
     pub seat: Seat<WyvernState<BackendData>>,
     pub clock: Clock<Monotonic>,
+    pub event_tx: Sender<CustomEvent>,
     pub pointer: PointerHandle<WyvernState<BackendData>>,
     #[cfg(feature = "xwayland")]
     pub xwm: Option<X11Wm>,
@@ -187,6 +182,7 @@ pub struct WyvernState<BackendData: Backend + 'static> {
     #[cfg(feature = "debug")]
     pub renderdoc: Option<renderdoc::RenderDoc<renderdoc::V141>>,
     pub show_window_preview: bool,
+    pub tiling_state: TilingState,
 }
 
 #[derive(Debug)]
@@ -195,7 +191,19 @@ pub struct DndIcon {
     pub offset: Point<i32, Logical>,
 }
 
+#[derive(Debug, Default)]
+pub struct TilingState {
+    pub tiled_windows: Vec<WindowElement>,
+    pub master_ratio: f32,
+    pub gap_size: i32,
+}
+
 delegate_compositor!(@<BackendData: Backend + 'static> WyvernState<BackendData>);
+
+impl<BackendData: Backend> BufferHandler for WyvernState<BackendData> {
+    fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
+}
+
 impl<BackendData: Backend> DataDeviceHandler for WyvernState<BackendData> {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
@@ -600,11 +608,94 @@ smithay::delegate_fifo!(@<BackendData: Backend + 'static> WyvernState<BackendDat
 smithay::delegate_commit_timing!(@<BackendData: Backend + 'static> WyvernState<BackendData>);
 
 impl<BackendData: Backend + 'static> WyvernState<BackendData> {
+    pub fn recalculate_tiling(&mut self) {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+        for output in self.space.outputs().cloned().collect::<Vec<_>>() {
+            let output_geometry = self.space.output_geometry(&output).unwrap();
+            let mut tiled_windows: Vec<WindowElement> = self
+                .space
+                .elements()
+                .filter(|window| {
+                    self.space.outputs_for_element(window).contains(&output)
+                        && !window.0.toplevel().map_or(false, |t| t.current_state().states.contains(xdg_toplevel::State::Fullscreen))
+                        && !window.0.toplevel().map_or(false, |t| t.current_state().states.contains(xdg_toplevel::State::Maximized))
+                })
+                .cloned()
+                .collect();
+
+            if tiled_windows.is_empty() {
+                continue;
+            }
+
+            tiled_windows.sort_by_key(|w| w.user_data().get::<u64>().copied().unwrap_or(0));
+
+            let gap = self.tiling_state.gap_size;
+            let total_gaps_width = if tiled_windows.len() > 1 { gap * 3 } else { gap * 2 }; // Left, right, and middle gap for master-stack, or just left/right for single
+            let total_gaps_height = if tiled_windows.len() > 1 { gap * 2 } else { gap * 2 }; // Top/bottom for master, and top/bottom for stack, or just top/bottom for single
+
+            let tiled_area_width = output_geometry.size.w - total_gaps_width;
+            let tiled_area_height = output_geometry.size.h - total_gaps_height;
+
+            let master_width = (tiled_area_width as f32 * self.tiling_state.master_ratio) as i32;
+            let stack_width = tiled_area_width - master_width - gap; // Subtract gap between master and stack
+
+            if tiled_windows.len() == 1 {
+                if let Some(toplevel) = tiled_windows[0].0.toplevel() {
+                    let window_geometry = Rectangle::new(
+                        output_geometry.loc + Point::from((gap, gap)),
+                        smithay::utils::Size::from((tiled_area_width, tiled_area_height)),
+                    );
+                    toplevel.with_pending_state(|state| {
+                        state.size = Some(window_geometry.size);
+                    });
+                    self.space.map_element(tiled_windows[0].clone(), window_geometry.loc, false);
+                    toplevel.send_configure();
+                }
+            } else {
+                // Master window
+                let master_geometry = Rectangle::new(
+                    output_geometry.loc + Point::from((gap, gap)),
+                    smithay::utils::Size::from((master_width, tiled_area_height)),
+                );
+                if let Some(toplevel) = tiled_windows[0].0.toplevel() {
+                    toplevel.with_pending_state(|state| {
+                        state.size = Some(master_geometry.size);
+                    });
+                    self.space.map_element(tiled_windows[0].clone(), master_geometry.loc, false);
+                    toplevel.send_configure();
+                }
+
+                // Stacked windows
+                let stack_windows = &tiled_windows[1..];
+                let num_stack_windows = stack_windows.len() as i32;
+                let stack_height_per_window = (tiled_area_height - (num_stack_windows - 1) * gap) / num_stack_windows;
+
+                for (i, window) in stack_windows.iter().enumerate() {
+                    let stack_geometry = Rectangle::new(
+                        smithay::utils::Point::from((
+                            output_geometry.loc.x + gap + master_width + gap,
+                            output_geometry.loc.y + gap + i as i32 * (stack_height_per_window + gap),
+                        )),
+                        smithay::utils::Size::from((stack_width, stack_height_per_window)),
+                    );
+                    if let Some(toplevel) = window.0.toplevel() {
+                        toplevel.with_pending_state(|state| {
+                            state.size = Some(stack_geometry.size);
+                        });
+                        self.space.map_element(window.clone(), stack_geometry.loc, false);
+                        toplevel.send_configure();
+                    }
+                }
+            }
+        }
+    }
+
     pub fn init(
         display: Display<WyvernState<BackendData>>,
         handle: LoopHandle<'static, WyvernState<BackendData>>,
         backend_data: BackendData,
         listen_on_socket: bool,
+        event_tx: Sender<CustomEvent>,
     ) -> WyvernState<BackendData> {
         let dh = display.handle();
 
@@ -749,6 +840,12 @@ impl<BackendData: Backend + 'static> WyvernState<BackendData> {
             #[cfg(feature = "debug")]
             renderdoc: renderdoc::RenderDoc::new().ok(),
             show_window_preview: false,
+            tiling_state: TilingState {
+                master_ratio: cfg.tiling.master_ratio,
+                gap_size: cfg.tiling.gap_size,
+                tiled_windows: Vec::new(),
+            },
+            event_tx,
         }
     }
 
@@ -1170,4 +1267,9 @@ pub trait Backend {
     fn reset_buffers(&mut self, output: &Output);
     fn early_import(&mut self, surface: &WlSurface);
     fn update_led_state(&mut self, led_state: LedState);
+}
+
+#[derive(Debug)]
+pub enum CustomEvent {
+    TilingRecalculate,
 }

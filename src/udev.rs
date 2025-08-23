@@ -34,12 +34,10 @@ use smithay::{
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
-            self,
             damage::Error as OutputDamageTrackerError,
             element::{memory::MemoryRenderBuffer, AsRenderElements, RenderElementStates},
             gles::GlesRenderer,
-            multigpu::{gbm::GbmGlesBackend, GpuManager, MultiRenderer},
-            Bind, BufferType, DebugFlags, ExportMem, ImportDma, ImportMemWl, Offscreen,
+            multigpu::{gbm::GbmGlesBackend, GpuManager, MultiRenderer}, DebugFlags, ImportDma, ImportMemWl,
         },
         session::{
             libseat::{self, LibSeatSession},
@@ -75,7 +73,7 @@ use smithay::{
         },
         wayland_server::{backend::GlobalId, protocol::wl_surface, Display, DisplayHandle},
     },
-    utils::{DeviceFd, IsAlive, Logical, Monotonic, Point, Rectangle, Scale, Time, Transform},
+    utils::{DeviceFd, IsAlive, Logical, Monotonic, Point, Scale, Time, Transform},
     wayland::{
         compositor,
         dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
@@ -85,7 +83,6 @@ use smithay::{
         },
         drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjHandler, DrmSyncobjState},
         presentation::Refresh,
-        shm,
     },
 };
 use smithay_drm_extras::{
@@ -101,7 +98,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tracing::{debug, error, info, trace, warn};
-use wayland_server::protocol::wl_output::WlOutput;
+
+use crate::state::CustomEvent;
+
 
 // we cannot simply pick the first supported format of the intersection of *all* formats, because:
 // - we do not want something like Abgr4444, which looses color information, if something better is available
@@ -223,10 +222,22 @@ impl Backend for UdevData {
     }
 }
 
-pub fn run_udev() {
+pub fn run_udev(event_rx_main: calloop::channel::Channel<CustomEvent>, event_tx_for_state: calloop::channel::Sender<CustomEvent>) {
     let mut event_loop = EventLoop::try_new().unwrap();
     let display = Display::new().unwrap();
     let mut display_handle = display.handle();
+
+    event_loop
+        .handle()
+        .insert_source(event_rx_main, move |event, _metadata, data: &mut WyvernState<UdevData>| {
+            match event {
+                calloop::channel::Event::Msg(CustomEvent::TilingRecalculate) => {
+                    data.recalculate_tiling();
+                }
+                _ => {},
+            }
+        })
+        .expect("Failed to insert CustomEvent channel into event loop");
 
     /*
      * Initialize session
@@ -282,7 +293,7 @@ pub fn run_udev() {
         debug_flags: DebugFlags::empty(),
         keyboards: Vec::new(),
     };
-    let mut state = WyvernState::init(display, event_loop.handle(), data, true);
+    let mut state = WyvernState::init(display, event_loop.handle(), data, true, event_tx_for_state);
 
     /*
      * Initialize the udev backend
@@ -556,6 +567,7 @@ pub fn run_udev() {
             state.running.store(false, Ordering::SeqCst);
         } else {
             state.space.refresh();
+            state.recalculate_tiling();
             state.popups.cleanup();
             display_handle.flush_clients().unwrap();
         }
@@ -638,11 +650,10 @@ impl DrmLeaseHandler for WyvernState<UdevData> {
 delegate_drm_lease!(WyvernState<UdevData>);
 
 impl DrmSyncobjHandler for WyvernState<UdevData> {
-    fn drm_syncobj_state(&mut self) -> &mut DrmSyncobjState {
+    fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
         self.backend_data
             .syncobj_state
             .as_mut()
-            .expect("Cannot initialize udev backend")
     }
 }
 smithay::delegate_drm_syncobj!(WyvernState<UdevData>);
@@ -867,7 +878,7 @@ impl WyvernState<UdevData> {
             })
             .ok_or(DeviceAddError::PrimaryGpuMissing)?;
 
-        let framebuffer_exporter = GbmFramebufferExporter::new(gbm.clone());
+        let framebuffer_exporter = GbmFramebufferExporter::new(gbm.clone(), None);
 
         let color_formats = if std::env::var("WYVERN_DISABLE_10BIT").is_ok() {
             SUPPORTED_FORMATS_8BIT_ONLY
@@ -1216,7 +1227,7 @@ impl WyvernState<UdevData> {
         }
 
         // fixup window coordinates
-        crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+        crate::shell::fixup_positions(self, self.pointer.current_location());
     }
 
     fn device_removed(&mut self, node: DrmNode) {
@@ -1253,7 +1264,7 @@ impl WyvernState<UdevData> {
             debug!("Dropping device");
         }
 
-        crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+        crate::shell::fixup_positions(self, self.pointer.current_location());
     }
 
     fn frame_finish(

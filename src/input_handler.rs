@@ -4,9 +4,6 @@ use crate::udev::UdevData;
 use crate::{focus::PointerFocusTarget, shell::FullscreenSurface, WyvernState};
 #[cfg(feature = "udev")]
 use smithay::backend::renderer::DebugFlags;
-use smithay::input::keyboard::xkb::Keymap;
-use smithay::input::keyboard::XkbConfig;
-use std::sync::atomic::AtomicUsize;
 use std::{convert::TryInto, process::Command, sync::atomic::Ordering};
 
 use smithay::{
@@ -40,7 +37,7 @@ use smithay::backend::input::AbsolutePositionEvent;
 use smithay::output::Output;
 use tracing::{debug, error, info};
 
-use crate::state::Backend;
+use crate::state::{Backend, CustomEvent};
 #[cfg(feature = "udev")]
 use smithay::{
     backend::{
@@ -167,6 +164,10 @@ impl<BackendData: Backend> WyvernState<BackendData> {
                         }
                     }
                 }
+            }
+
+            KeyAction::RecalculateTiling => {
+                let _ = self.event_tx.send(CustomEvent::TilingRecalculate);
             }
 
             _ => unreachable!(
@@ -527,7 +528,7 @@ impl<BackendData: Backend> WyvernState<BackendData> {
                         None,
                     );
 
-                    crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+                                        crate::shell::fixup_positions(self, self.pointer.current_location());
                     self.backend_data.reset_buffers(&output);
                 }
 
@@ -548,7 +549,7 @@ impl<BackendData: Backend> WyvernState<BackendData> {
                         None,
                     );
 
-                    crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+                                        crate::shell::fixup_positions(self, self.pointer.current_location());
                     self.backend_data.reset_buffers(&output);
                 }
 
@@ -573,7 +574,7 @@ impl<BackendData: Backend> WyvernState<BackendData> {
                     };
                     tracing::info!(?current_transform, ?new_transform, output = ?output.name(), "changing output transform");
                     output.change_current_state(None, Some(new_transform), None, None);
-                    crate::shell::fixup_positions(&mut self.space, self.pointer.current_location());
+                                        crate::shell::fixup_positions(self, self.pointer.current_location());
                     self.backend_data.reset_buffers(&output);
                 }
 
@@ -716,7 +717,7 @@ impl WyvernState<UdevData> {
                         pointer_output_location.y *= rescale;
                         let pointer_location = output_location + pointer_output_location;
 
-                        crate::shell::fixup_positions(&mut self.space, pointer_location);
+                        crate::shell::fixup_positions(self, pointer_location);
                         let pointer = self.pointer.clone();
                         let under = self.surface_under(pointer_location);
                         pointer.motion(
@@ -761,7 +762,7 @@ impl WyvernState<UdevData> {
                         pointer_output_location.y *= rescale;
                         let pointer_location = output_location + pointer_output_location;
 
-                        crate::shell::fixup_positions(&mut self.space, pointer_location);
+                        crate::shell::fixup_positions(self, pointer_location);
                         let pointer = self.pointer.clone();
                         let under = self.surface_under(pointer_location);
                         pointer.motion(
@@ -799,7 +800,7 @@ impl WyvernState<UdevData> {
                         };
                         output.change_current_state(None, Some(new_transform), None, None);
                         crate::shell::fixup_positions(
-                            &mut self.space,
+                            self,
                             self.pointer.current_location(),
                         );
                         self.backend_data.reset_buffers(&output);
@@ -1403,6 +1404,7 @@ enum KeyAction {
     RotateOutput,
     ToggleTint,
     ToggleDecorations,
+    RecalculateTiling,
     /// Do nothing more
     None,
 }
@@ -1480,6 +1482,10 @@ fn process_keyboard_shortcut(modifiers: ModifiersState, keysym: Keysym) -> Optio
             Keysym::Return => Some(KeyAction::Run(cfg.terminal)),
             _ => None,
         };
+    }
+
+    if modifiers.logo && keysym == Keysym::T {
+        return Some(KeyAction::RecalculateTiling);
     }
 
     None

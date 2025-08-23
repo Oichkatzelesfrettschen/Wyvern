@@ -25,12 +25,14 @@ use smithay::{
         },
     },
 };
+
+use smithay::reexports::calloop;
 use tracing::{trace, warn};
 
 use crate::{
     focus::KeyboardFocusTarget,
     shell::{TouchMoveSurfaceGrab, TouchResizeSurfaceGrab},
-    state::{Backend, WyvernState},
+    state::{Backend, CustomEvent, WyvernState},
 };
 
 use super::{
@@ -48,12 +50,14 @@ impl<BackendData: Backend> XdgShellHandler for WyvernState<BackendData> {
         // of a xdg_surface has to be sent during the commit if
         // the surface is not already configured
         let window = WindowElement(Window::new_wayland_window(surface.clone()));
+        let event_tx = self.event_tx.clone();
+        
         place_new_window(
-            &mut self.space,
-            self.pointer.current_location(),
+            self,
             &window,
             true,
         );
+        let _ = event_tx.send(CustomEvent::TilingRecalculate);
 
         compositor::add_post_commit_hook(surface.wl_surface(), |state: &mut Self, _, surface| {
             handle_toplevel_commit(&mut state.space, surface);

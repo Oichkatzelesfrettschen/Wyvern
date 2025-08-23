@@ -46,9 +46,12 @@ use smithay::{
         presentation::Refresh,
     },
 };
+
+use smithay::reexports::calloop;
 use tracing::{error, info, warn};
 
-use crate::state::{take_presentation_feedback, Backend, WyvernState};
+use crate::state::{take_presentation_feedback, Backend, CustomEvent, WyvernState};
+
 use crate::{drawing::*, render::*};
 
 pub const OUTPUT_NAME: &str = "winit";
@@ -99,10 +102,22 @@ impl Backend for WinitData {
     fn update_led_state(&mut self, _led_state: LedState) {}
 }
 
-pub fn run_winit() {
+pub fn run_winit(event_rx_main: calloop::channel::Channel<CustomEvent>, event_tx_for_state: calloop::channel::Sender<CustomEvent>) {
     let mut event_loop = EventLoop::try_new().unwrap();
     let display = Display::new().unwrap();
     let mut display_handle = display.handle();
+
+    event_loop
+        .handle()
+        .insert_source(event_rx_main, move |event, _metadata, data: &mut WyvernState<WinitData>| {
+            match event {
+                calloop::channel::Event::Msg(CustomEvent::TilingRecalculate) => {
+                    data.recalculate_tiling();
+                }
+                _ => {},
+            }
+        })
+        .expect("Failed to insert CustomEvent channel into event loop");
 
     #[cfg_attr(not(feature = "egl"), allow(unused_mut))]
     let (mut backend, mut winit) = match winit::init::<GlesRenderer>() {
@@ -217,7 +232,7 @@ pub fn run_winit() {
             fps: fps_ticker::Fps::default(),
         }
     };
-    let mut state = WyvernState::init(display, event_loop.handle(), data, true);
+    let mut state = WyvernState::init(display, event_loop.handle(), data, true, event_tx_for_state);
     state
         .shm_state
         .update_formats(state.backend_data.backend.renderer().shm_formats());
@@ -242,7 +257,8 @@ pub fn run_winit() {
                 };
                 output.change_current_state(Some(mode), None, None, None);
                 output.set_preferred(mode);
-                crate::shell::fixup_positions(&mut state.space, state.pointer.current_location());
+                let pointer_location = state.pointer.current_location();
+                crate::shell::fixup_positions(&mut state, pointer_location);
             }
             WinitEvent::Input(event) => state.process_input_event_windowed(event, OUTPUT_NAME),
             _ => (),
