@@ -671,6 +671,583 @@ Once modernization is complete, consider:
 
 ---
 
+## Part 10: Comprehensive Code Analysis Infrastructure
+
+**Status:** NEW SECTION (based on Code-Analysis-Tooling analysis)
+**Version:** 1.1 Enhancement
+**Date Added:** 2025-12-31
+
+This section synthesizes a 5-layer code analysis pyramid specifically tailored to Wyvern's modernization needs.
+
+### 10.1 The 5-Layer Analysis Pyramid for Wyvern
+
+A complete code analysis infrastructure ensures quality, correctness, and security through layered verification:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ LAYER 5: FORMAL VERIFICATION (Correctness Proofs)              │
+│ Tools: TLA+ (dynamic tiling algorithm), Coq (theorems)         │
+│ Purpose: Prove absence of deadlock/race conditions             │
+│ Cost: High (human time), Low (once proven)                     │
+│ Timeline: Hours/Days (per specification)                       │
+│ Application to Wyvern:                                         │
+│  - Verify dynamic tiling window layout algorithm               │
+│  - Prove focus cycling never deadlocks                         │
+│  - Prove seat/input routing correctness                        │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│ LAYER 4: ABSTRACT INTERPRETATION (Memory Safety)               │
+│ Tools: Facebook Infer (separation logic), z3, KLEE (symbolic)  │
+│ Purpose: Detect memory leaks, null dereferences, use-after-free│
+│ Cost: Moderate (CPU), Scalable (Facebook uses at 1M+ LOC)      │
+│ Timeline: Minutes per analysis                                 │
+│ Application to Wyvern:                                         │
+│  - Detect memory leaks in Smithay FFI boundaries               │
+│  - Verify Wayland buffer lifecycle (allocation/deallocation)  │
+│  - Check resource cleanup on surface destruction               │
+│  - Race condition detection in input handling                  │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│ LAYER 3: SEMANTIC CODE PATTERNS (Vulnerability Detection)      │
+│ Tools: Semgrep (cross-language), Coccinelle (C transformation) │
+│ Purpose: Find known vulnerability patterns at scale             │
+│ Cost: Low (CPU), Fast, User-configurable                       │
+│ Timeline: Seconds (50-150 rules)                               │
+│ Application to Wyvern:                                         │
+│  - OWASP Top 10 patterns (SQL injection NA, XSS in wayland)   │
+│  - CWE Top 25 (buffer overflow, integer overflow, etc.)       │
+│  - Custom patterns: unsafe Wayland protocol handling           │
+│  - Taint tracking: untrusted client data flow analysis         │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│ LAYER 2: CODE QUALITY METRICS (Technical Debt Tracking)        │
+│ Tools: SonarQube (aggregation), Clippy (Rust linter)          │
+│ Purpose: Track complexity, coverage, maintainability over time │
+│ Cost: Low (mostly storage), Strategic visibility               │
+│ Timeline: 1-2 minutes per scan                                 │
+│ Application to Wyvern:                                         │
+│  - Complexity of state.rs (50KB), input_handler.rs (58KB)      │
+│  - Code duplication across backend implementations             │
+│  - Test coverage for each module (target: 80%+)                │
+│  - Technical debt trend analysis (historical tracking)         │
+│  - Bug density (bugs per KLOC)                                 │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│ LAYER 1: LINTING & TYPE CHECKING (Fast Feedback)              │
+│ Tools: clippy (Rust), shellcheck (shell), cargo check          │
+│ Purpose: Catch obvious errors (syntax, undeclared vars, etc.)  │
+│ Cost: Very Low, Fast, High noise (false positives)             │
+│ Timeline: Fast (< 1 second per invocation)                    │
+│ Application to Wyvern:                                         │
+│  - Clippy warnings as errors (-D warnings in CI)               │
+│  - Cargo fmt enforcement (formatting consistency)              │
+│  - Type checking via cargo check (fast feedback loop)          │
+│  - Deny deprecated APIs in Smithay usage                       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 10.2 Specific Tools & Integration Plan for Wyvern
+
+#### Layer 5: TLA+ for Dynamic Tiling Algorithm Verification
+
+**Status:** RECOMMENDED (New)
+**Priority:** MEDIUM (Phase 5+, after stabilization)
+
+**Why TLA+ for Wyvern?**
+
+The dynamic tiling algorithm is the heart of Wyvern. A bug in tiling can:
+- Cause windows to disappear or overlap unintentionally
+- Create visual deadlocks (infinite loops in layout calculation)
+- Cause focus cycling to fail or hang
+
+**Application Strategy:**
+
+```tla
+---- FILE: Tiling.tla ----
+MODULE Tiling
+EXTENDS Naturals, Sequences
+
+VARIABLE
+  windows,          \* Set of active windows
+  layout,           \* Current layout (split tree)
+  focusedWindow,    \* Currently focused window
+  focusedWorkspace  \* Current workspace
+
+---- Initial State: Single window
+Init == /\ windows = {w1}
+        /\ layout = w1
+        /\ focusedWindow = w1
+        /\ focusedWorkspace = "ws1"
+
+---- Next: Add/remove windows, cycle focus, change layout
+Next == \/ AddWindow
+        \/ RemoveWindow
+        \/ CycleFocus
+        \/ SplitHorizontal
+        \/ SplitVertical
+
+---- Invariant: Focus is always on an existing window
+FocusInvariant == focusedWindow \in windows
+
+---- Liveness: Focus cycling always terminates
+FocusCyclingTerminates == <>[](\A w \in windows : CanReachViaFocus(w))
+
+Spec == Init /\ [][Next]_<<windows, layout, focusedWindow>>
+
+THEOREM Spec => []FocusInvariant  \* Prove: focus never orphaned
+THEOREM Spec => FocusCyclingsTerminates  \* Prove: cycle terminates
+```
+
+**Verification Process:**
+```bash
+# 1. Write TLA+ specification of tiling algorithm
+vim Wyvern_Tiling.tla
+
+# 2. Run TLC model checker
+tlc Wyvern_Tiling.tla -depth 1000 -workers 4
+
+# 3. If errors found, fix spec or algorithm
+# 4. Iterate until: Diameter OK, Invariants hold, Liveness proven
+```
+
+**Integration Points:**
+- Model checking runs in CI (after Phase 4)
+- If tiling algorithm changes, spec updated before implementation
+- Spec becomes living documentation of tiling guarantees
+
+#### Layer 4: Facebook Infer for Memory Safety Analysis
+
+**Status:** RECOMMENDED (Phase 2, after dependency updates)
+**Priority:** HIGH (critical for FFI boundaries)
+**Installation:** `sudo pacman -U ~/pkgbuilds/infer-static/infer-static-1.1.0-1-x86_64.pkg.tar.zst`
+
+**Why Infer for Wyvern?**
+
+Wyvern has FFI boundaries:
+- Smithay (Rust) ↔ Wayland C protocol
+- Smithay ↔ DRM/KMS C libraries (libdrm, libgbm)
+- Smithay ↔ XWayland (X11 C client protocol)
+
+Infer detects:
+- Memory leaks (unclosed file handles, allocated buffers)
+- Use-after-free (accessing freed Wayland surfaces)
+- Null dereferences (uninitialized protocol state)
+- Race conditions (concurrent surface access)
+
+**Application Strategy:**
+
+```bash
+# 1. Analyze entire Wyvern project
+infer run -- cargo build --release 2>&1 | tee infer-build.log
+
+# 2. Review findings
+cat infer-out/report.txt | grep -E "ERROR|WARNING"
+firefox infer-out/report.html
+
+# 3. For each finding:
+#    - False positive? Document why (--infer-ignore-exceptions)
+#    - Real leak? Fix in code
+#    - Design issue? Update CLAUDE.md with pattern
+
+# 4. Integrate into CI/CD (see section 10.4)
+```
+
+**Expected Findings & Handling:**
+
+| Finding Type | Expected | Example | Action |
+|-------|----------|---------|--------|
+| Memory Leak | 2-5 | Wayland buffer not deallocated on error path | FIX |
+| Use-After-Free | 0-1 | Surface accessed after protocol destruction | FIX |
+| Null Dereference | 1-3 | Uninitialized input_handler state | FIX |
+| Race Condition | 0-2 | Concurrent focus changes | FIX/DOCUMENT |
+| Resource Leak | 3-5 | File descriptor from DRM device | FIX |
+
+**Integration Workflow:**
+
+```bash
+# Phase 2: Run once to establish baseline
+infer run -- cargo build
+BASELINE=$(wc -l < infer-out/report.txt)
+# Store baseline in CI/CD config
+
+# Ongoing: Block merges if new findings > baseline
+infer run -- cargo build
+CURRENT=$(wc -l < infer-out/report.txt)
+if [ "$CURRENT" -gt "$BASELINE" ]; then
+  echo "❌ NEW MEMORY SAFETY ISSUES DETECTED"
+  exit 1
+fi
+```
+
+#### Layer 3: Semgrep for Security & Pattern Detection
+
+**Status:** RECOMMENDED (Phase 2, immediate installation)
+**Priority:** MEDIUM (security baseline)
+**Installation:** `yay -S semgrep`
+
+**Why Semgrep for Wyvern?**
+
+Wyvern processes untrusted client data:
+- Wayland protocol messages from clients
+- X11 window hints and properties
+- Input events (keyboard/pointer coordinates)
+
+Semgrep can detect:
+- Malformed protocol handling (incomplete validation)
+- Integer overflows (screen coordinates, buffer sizes)
+- Buffer overflows (string handling)
+- Logic errors (taint tracking for client data)
+
+**Custom Ruleset for Wyvern:**
+
+```yaml
+---- FILE: .semgrep.yml ----
+rules:
+  - id: untrusted_wayland_buffer_size
+    pattern-either:
+      - pattern: |
+          buffer_size = client_message.width * client_message.height
+          # Must validate: width/height < MAX_RESOLUTION
+      - pattern: malloc(untrusted_size)
+    message: Buffer allocation from untrusted client data without bounds check
+    severity: WARNING
+    languages: [rust]
+
+  - id: invalid_focus_transition
+    pattern: |
+      focus_window(client_provided_id)
+      # Without verifying client_provided_id is valid window
+    message: Potential focus hijack; validate window ownership
+    severity: ERROR
+    languages: [rust]
+
+  - id: missing_wayland_protocol_validation
+    pattern: |
+      match wayland_message {
+        XDG_SHELL_REQUEST => { /* handler */ }
+        // Missing default case for unknown requests
+      }
+    message: Incomplete protocol state machine; add exhaustive match
+    severity: WARNING
+    languages: [rust]
+```
+
+**Integration:**
+
+```bash
+# Run before each commit
+semgrep --config=.semgrep.yml --error src/
+
+# Run in CI with public rulesets
+semgrep --config=p/owasp-top-ten --config=p/security-audit src/
+
+# Custom org ruleset (if using Semgrep Cloud)
+semgrep --config=p/<org-slug>/wyvern-compositor src/
+```
+
+#### Layer 2: SonarQube for Quality Tracking
+
+**Status:** RECOMMENDED (Phase 2-3)
+**Priority:** MEDIUM (long-term visibility)
+**Installation:** `sudo pacman -U ~/pkgbuilds/sonarqube-server/sonarqube-server-10.6-2-x86_64.pkg.tar.zst`
+
+**Why SonarQube for Wyvern?**
+
+Tracks:
+- Code complexity (cyclomatic, cognitive)
+- Test coverage (% of lines executed)
+- Duplicate code blocks
+- Technical debt estimate (in person-days)
+- Bug density trends over time
+
+**Setup:**
+
+```bash
+# 1. Install and start
+sonarqube-setup
+systemctl --user start sonarqube-server
+
+# 2. Generate token
+# Navigate to http://localhost:9000 → Administration → Security → User Tokens
+
+# 3. Create sonar-project.properties
+cat > sonar-project.properties << 'EOF'
+sonar.projectKey=wyvern
+sonar.projectName=Wyvern Compositor
+sonar.projectVersion=$(git describe --tags)
+sonar.sources=src
+sonar.tests=tests
+sonar.exclusions=**/generated/**,**/migrations/**
+sonar.coverage.exclusions=**/test/**,**/benches/**
+
+# Rust-specific settings
+sonar.rust.clippy.reportPath=clippy-report.json
+sonar.rust.coverage.reportPath=coverage.xml
+EOF
+
+# 4. Run scanner
+sonar-scanner -Dsonar.login=squ_XXXXX
+
+# 5. View dashboard
+firefox http://localhost:9000/dashboard?id=wyvern
+```
+
+**Metrics to Track:**
+
+| Metric | Target | Current | Action |
+|--------|--------|---------|--------|
+| Test Coverage | 80%+ | TBD | Increase in Phase 4 |
+| Complexity (state.rs) | < 15 | TBD | Refactor large functions |
+| Duplicates | < 3% | TBD | Extract common patterns |
+| Tech Debt | < 5 days | TBD | Schedule refactoring |
+| Bugs Found | Decreasing trend | Baseline phase 2 | Monitor over time |
+
+#### Layer 1: Clippy + Cargo for Fast Feedback
+
+**Status:** IN USE (already integrated)
+**Priority:** HIGH (first-line defense)
+
+**Current Setup:**
+- `cargo clippy --all-targets --all-features -- -D warnings` ✅ Already in use (lib.rs line 1)
+- `cargo fmt` for formatting consistency ✅
+- `cargo test` for unit tests ✅
+
+**Enhancements Needed:**
+
+```bash
+# 1. Add to CI/CD (see section 10.4)
+cargo clippy --all-targets --all-features -- -D warnings
+
+# 2. Add deny crate for supply chain security
+cat > deny.toml << 'EOF'
+[advisories]
+db-path = "~/.cargo/advisory-db"
+vulnerability = "deny"
+unmaintained = "warn"
+unsound = "warn"
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 OR MIT",
+]
+EOF
+
+# 3. Run deny before merge
+cargo deny check
+
+# 4. Add SARIF output for CI/CD integration
+cargo clippy --message-format=json > clippy-report.json
+```
+
+### 10.3 CI/CD Pipeline Integration
+
+**Status:** RECOMMENDED (Phase 2-3)
+**File to Create:** `.github/workflows/code-analysis.yml` (GitHub Actions)
+
+```yaml
+name: Code Analysis Pipeline
+
+on: [push, pull_request]
+
+jobs:
+  # Layer 1: Fast Feedback (1 min)
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo fmt --check
+      - run: cargo deny check
+
+  # Layer 3: Security Patterns (30 sec)
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: |
+            p/owasp-top-ten
+            p/security-audit
+            .semgrep.yml
+
+  # Layer 4: Memory Safety (5 min) - Rust only, build on Linux
+  infer:
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[infer]') || github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install infer || apt-get install -y infer
+      - run: infer run -- cargo build --all-features
+      - uses: actions/upload-artifact@v3
+        with:
+          name: infer-report
+          path: infer-out/report.html
+
+  # Layer 2: Quality Aggregation (2 min)
+  sonarqube:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v3
+      - run: cargo clippy --message-format=json > clippy.json || true
+      - run: cargo tarpaulin --out Xml --output-dir coverage
+      - uses: SonarSource/sonarqube-scan-action@v2
+        env:
+          SONAR_HOST_URL: https://sonarqube.example.com
+          SONAR_LOGIN: ${{ secrets.SONAR_TOKEN }}
+
+  # Test Suite
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --all-features
+      - run: cargo tarpaulin --out Xml
+      - uses: codecov/codecov-action@v3
+
+  # Layer 5: Formal Verification (Manual, on demand)
+  # Note: TLA+ requires GUI/manual verification; can't easily CI
+  # Recommendation: Run locally, commit .tla specs to repo
+  # CD could verify .tla specs parse: tlc -check <spec>
+```
+
+### 10.4 Measurement & Quality Gates
+
+**Status:** RECOMMENDED (Phase 3)
+**Purpose:** Define success criteria, block low-quality merges
+
+**Quality Gate Definition:**
+
+```yaml
+# File: sonar-quality-gate.yml (SonarQube configuration)
+
+# 1. CORRECTNESS
+- metric: reliability_rating
+  condition: A  # A=0 bugs, B=1-5, C=6-10, D=11-20, E=21+
+
+- metric: security_rating
+  condition: A  # No security vulnerabilities
+
+- metric: coverage
+  condition: '>80'  # At least 80% coverage
+
+# 2. MAINTAINABILITY
+- metric: sqale_rating
+  condition: A  # Technical debt ratio < 5%
+
+- metric: cognitive_complexity
+  condition: '<10'  # Avg cyclomatic complexity per function
+
+- metric: duplicated_lines
+  condition: '<3'  # Less than 3% duplication
+
+# 3. CUSTOM FOR WYVERN
+- metric: file_complexity  # state.rs shouldn't exceed 40KB
+  condition: '<2000 lines'  # Max file size
+
+# Block merge if ANY gate fails
+allow_failures: false
+```
+
+**Measurement Dashboard (Track Monthly):**
+
+```
+Week 1:  Phase 0 - Baseline metrics established
+  ├─ Code Complexity: state.rs = 42 (HIGH), input_handler.rs = 38
+  ├─ Coverage: 45% (LOW, target 80%)
+  ├─ Tech Debt: 12 days (MEDIUM, target < 5 days)
+  └─ Bugs Found: 0 (baseline for Infer)
+
+Week 4:  Phase 1 Complete
+  ├─ Deps updated: smithay 0.7.0 → 0.7.2, x11rb 0.13.0 → 0.13.2
+  ├─ Coverage: 52% (improving)
+  ├─ Tech Debt: 10 days (improving)
+  └─ Bugs Found: 3 memory issues (Infer), all fixed
+
+Week 8:  Phase 2 Complete
+  ├─ Tracing added to client lifecycle
+  ├─ Coverage: 68% (near target)
+  ├─ Tech Debt: 6 days (on track)
+  └─ Semgrep: 152 OWASP rules checked, 0 failures
+```
+
+### 10.5 Security & Correctness Verification Strategy
+
+**Status:** NEW (comprehensive security focus)
+**Priority:** HIGH (compositor handles untrusted input)
+
+**Threat Model for Wyvern:**
+
+1. **Malicious Wayland Client**
+   - Send oversized buffers (DOS)
+   - Provide invalid window coordinates (crash)
+   - Request invalid operations (deadlock)
+
+2. **X11 Application via XWayland**
+   - Send malformed X11 protocol messages
+   - Request forbidden operations (bypass restrictions)
+
+3. **Local Privilege Escalation**
+   - Exploit DRM device access
+   - Exploit session management bugs
+
+**Verification Approach:**
+
+```bash
+# 1. Fuzzing (detect crashes)
+cargo fuzz target=wayland_message_parser -- -max_len=10000
+
+# 2. Protocol Validation (automated)
+semgrep --config=.semgrep.yml --error src/shell/ src/state.rs
+
+# 3. Formal Verification (prove correctness)
+# For critical paths (focus cycling, window closing):
+tlc Wyvern_Focus_Protocol.tla -depth 500
+
+# 4. Memory Safety (static + runtime)
+infer run -- cargo build
+cargo miri test  # Runtime verification on unsafe blocks
+```
+
+### 10.6 Performance Analysis & Profiling Integration
+
+**Status:** RECOMMENDED (Phase 2-3, profiling setup)
+**Tools:** perf, flamegraph, tracy (already in codebase)
+
+**Measurement Framework:**
+
+```bash
+# Baseline Metrics (Phase 0)
+perf stat -e cycles,instructions,cache-misses cargo run -- --winit < test_events.log
+# Output: ~2B cycles, 5B instructions, 50M cache-misses per frame
+
+# Profiling (Phase 2)
+flamegraph --bin wyvern -- --winit < test_events.log
+# Output: Identify hot functions (> 10% CPU time)
+# Expected: render() > input_handler() > focus.rs
+
+# Tracy Integration (already enabled via feature: profile-with-tracy)
+TRACY_ENABLE=1 cargo run --features profile-with-tracy -- --winit
+# Open http://localhost:8086 in browser (Tracy UI)
+# Monitor: Frame time, GPU stall, memory allocations
+
+# Regression Detection
+# Commit baseline measurements to repo
+# CI checks if new measurements exceed +10% threshold
+```
+
+---
+
 ## Appendix: Referenced Files & Links
 
 ### Key Source Files
