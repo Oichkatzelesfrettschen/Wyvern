@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/home/eirikr/Github/Wyvern/logs/.07b7ec869bed6a09f57f0ac4c8272a25c7397e78-audit.json",
+    "files": [
+        {
+            "date": 1767252306241,
+            "name": "/home/eirikr/Github/Wyvern/logs/mcp-puppeteer-2025-12-31.log",
+            "hash": "379a7ff4e85065081d936acc5ddd7f01e2aecca7dbada34805c7187b0b0c7cfb"
+        }
+    ],
+    "hashType": "sha256"
+}

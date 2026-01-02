@@ -1,0 +1,192 @@
+# Wyvern Configuration Example
+# =============================
+#
+# This file demonstrates all available configuration options for Wyvern.
+# Wyvern uses environment variables for runtime configuration.
+# Copy this file to reference the available options.
+#
+# NOTE: Wyvern currently does not use a TOML config file directly.
+# All configuration is done via environment variables or command-line arguments.
+# This file serves as documentation for available options.
+
+# ============================================================================
+# COMMAND-LINE ARGUMENTS (passed to wyvern executable)
+# ============================================================================
+#
+# Wyvern accepts an optional first argument to select the backend:
+#
+#   wyvern                  # Uses default backend (udev if available, else winit or x11)
+#   wyvern --winit          # Force winit backend (desktop windowing)
+#   wyvern --tty-udev       # Force udev backend (DRM/KMS on tty)
+#   wyvern --x11            # Force x11 backend (X11 server compatibility)
+#
+# The default behavior without arguments:
+#   1. If compiled with --features udev: use udev backend
+#   2. If compiled with --features winit: use winit backend
+#   3. If compiled with --features x11: use x11 backend
+#   4. If no backends compiled: error (build requires at least one backend)
+
+# ============================================================================
+# ENVIRONMENT VARIABLES - GPU and Rendering
+# ============================================================================
+
+# WYVERN_DRM_DEVICE
+# -----------------
+# For udev backend: Path to the DRM device to use as primary GPU
+# Default: Auto-detect primary GPU (usually /dev/dri/card0 or /dev/dri/renderD128)
+# Example: WYVERN_DRM_DEVICE=/dev/dri/card1
+#
+# Use this to select which GPU to use if you have multiple GPUs:
+#   WYVERN_DRM_DEVICE=/dev/dri/card1 wyvern --tty-udev
+
+# WYVERN_DISABLE_10BIT
+# -------------------
+# For udev backend: Disable 10-bit color format support
+# Default: Enabled (10-bit support enabled if GPU supports it)
+# If set (any value): 8-bit color formats only
+# Example: WYVERN_DISABLE_10BIT=1 wyvern --tty-udev
+#
+# Use this if you experience color issues with 10-bit displays:
+#   WYVERN_DISABLE_10BIT=1 wyvern
+
+# WYVERN_NO_VULKAN
+# ----------------
+# For x11 backend: Disable Vulkan rendering, use OpenGL ES only
+# Default: Enabled (Vulkan support enabled if available)
+# If set to "1": Vulkan disabled, falls back to OpenGL ES
+# Example: WYVERN_NO_VULKAN=1 wyvern --x11
+#
+# Use this if Vulkan causes crashes or performance issues:
+#   WYVERN_NO_VULKAN=1 wyvern --x11
+
+# ============================================================================
+# ENVIRONMENT VARIABLES - Rendering Optimization
+# ============================================================================
+
+# WYVERN_DISABLE_DIRECT_SCANOUT
+# ----------------------------
+# For udev backend: Disable direct scanout optimization
+# Default: Enabled (direct scanout enabled for better performance)
+# If set (any value): Direct scanout disabled, uses composition pipeline
+# Example: WYVERN_DISABLE_DIRECT_SCANOUT=1 wyvern --tty-udev
+#
+# Direct scanout allows surfaces to scan out directly to the framebuffer,
+# bypassing the composition pipeline. Disable this if you experience tearing
+# or compatibility issues:
+#   WYVERN_DISABLE_DIRECT_SCANOUT=1 wyvern
+
+# ============================================================================
+# ENVIRONMENT VARIABLES - Input and Cursor
+# ============================================================================
+
+# XCURSOR_THEME
+# --------------
+# Cursor theme name to use
+# Default: "default" or system default theme
+# Example: XCURSOR_THEME=Adwaita wyvern
+#
+# Common themes: Adwaita, DMZ-White, DMZ-Black, Vanilla-DMZ
+
+# XCURSOR_SIZE
+# -----------
+# Cursor size in pixels
+# Default: 24
+# Example: XCURSOR_SIZE=32 wyvern
+#
+# Typical values: 24, 32, 48, 64
+
+# ============================================================================
+# ENVIRONMENT VARIABLES - XWayland
+# ============================================================================
+
+# WYVERN_XWAYLAND_SCALE
+# --------------------
+# Scale factor for XWayland windows (X11 applications)
+# Default: Auto-detect from Wayland output scale
+# Example: WYVERN_XWAYLAND_SCALE=1.5 wyvern
+#
+# Use this to scale X11 applications independently from Wayland scaling.
+# Accepts float values (1.0, 1.5, 2.0, etc.)
+
+# ============================================================================
+# ENVIRONMENT VARIABLES - Logging and Debugging
+# ============================================================================
+
+# RUST_LOG
+# --------
+# Control logging verbosity
+# Default: "info" (if not set, uses compact format)
+# Example: RUST_LOG=debug wyvern
+# Example: RUST_LOG=wyvern=debug wyvern
+#
+# Levels: trace, debug, info, warn, error
+# Module-specific logging: RUST_LOG=wyvern::x11=debug,wyvern::udev=info
+#
+# Trace the compositor's event loop:
+#   RUST_LOG=trace wyvern
+
+# ============================================================================
+# EXAMPLE CONFIGURATIONS
+# ============================================================================
+
+# Production: udev backend with auto GPU selection, standard settings
+#   wyvern --tty-udev
+
+# X11 server: Disable Vulkan if experiencing issues
+#   WYVERN_NO_VULKAN=1 wyvern --x11
+
+# High-DPI display with adjusted cursor
+#   XCURSOR_SIZE=48 WYVERN_XWAYLAND_SCALE=2.0 wyvern
+
+# Debug: Enable detailed logging for troubleshooting
+#   RUST_LOG=debug wyvern
+
+# Specific GPU selection with 8-bit color
+#   WYVERN_DRM_DEVICE=/dev/dri/card1 WYVERN_DISABLE_10BIT=1 wyvern
+
+# ============================================================================
+# FEATURE FLAGS (Build-time Configuration)
+# ============================================================================
+#
+# These are set when building Wyvern and control which backends are compiled:
+#
+#   cargo build                               # All backends (udev, winit, x11, egl)
+#   cargo build --features udev,egl           # udev + EGL only
+#   cargo build --features winit,egl          # winit + EGL only
+#   cargo build --features x11,egl            # x11 + EGL only
+#   cargo build --no-default-features --features winit,egl  # Custom selection
+#
+# Available features:
+#   - udev:    DRM/KMS backend (production)
+#   - winit:   Desktop windowing backend (development)
+#   - x11:     X11 server backend (compatibility)
+#   - egl:     OpenGL ES rendering (EGL)
+#   - debug:   Enable debug output and FPS counter
+#   - profile-with-tracy:    Enable Tracy profiler
+#   - profile-with-tracy-mem: Enable Tracy memory profiling
+#   - profile-with-puffin:    Enable Puffin profiler
+
+# ============================================================================
+# MIGRATION NOTES
+# ============================================================================
+#
+# If Wyvern is extended with a TOML config file in the future, the format
+# would likely mirror the structure above:
+#
+#   [backend]
+#   type = "udev"  # or "winit", "x11"
+#   drm_device = "/dev/dri/card0"
+#
+#   [rendering]
+#   enable_10bit = true
+#   enable_direct_scanout = true
+#   vulkan_enabled = true
+#
+#   [input]
+#   cursor_theme = "Adwaita"
+#   cursor_size = 24
+#
+#   [xwayland]
+#   scale = 1.0
+#
+# For now, use environment variables as documented above.

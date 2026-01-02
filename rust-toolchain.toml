@@ -1,0 +1,7 @@
+[toolchain]
+# Pinned to nightly-2026-01-01 for reproducible builds
+# If your mirror hasn't propagated this date yet, use nightly-2025-12-31
+channel = "nightly-2026-01-01"
+components = ["rust-src", "rust-analyzer", "llvm-tools-preview", "miri"]
+targets = ["x86_64-unknown-linux-gnu"]
+profile = "minimal"
